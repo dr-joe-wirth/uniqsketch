@@ -1,5 +1,8 @@
 # UniqSketch: Sensitive and resource-efficient strain/abundance identification in metagenomics data   
 
+[![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/uniqsketch/README.html)
+
+
 UniqSketch is a sensitive tool for identifying strains and their relative abundances in metagenomics samples. UniqSketch algorithm consists of two stages: Indexing and Querying. 
 * **Indexing**: the algorithm takes a list of target sequences (usually reference genomes) and then identifies all k-mers within each target in the list that uniquely belong to that specific sequence. 
 It then checks a set of criteria such as low-complexity on the k-mer candidates to refine the list and provide the final set of unique k-mers for each target.  
@@ -11,12 +14,27 @@ To efficiently (memory and runtime) keep track of k-mers and their frequencies a
  After all solid k-mers in the raw read input data are queried, 
  the reference count table is calculated computed to generate the final output of most abundant references. 
 # Installation
-UniqSketch builds into a stand-alone executable:
+## `conda` installation (recommended)
+UniqSketch can be installed with `conda`
+```bash
+conda install -c bioconda -c conda-forge uniqsketch
 ```
+
+## Manual installation
+UniqSketch builds into a stand-alone executable:
+```bash
 git clone https://github.com/amazon-science/uniqsketch
 cd uniqsketch
 make
 ```
+
+## Verifying installation
+To check that UniqSketch was successfully installed, try running the following command:
+
+```bash
+uniqsketch --help
+```
+
 # Quick Start
 UniqSketch consists of two modules: 
 * `uniqsketch`: for building a signature index from reference/target database
