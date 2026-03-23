@@ -9,65 +9,59 @@
 #include "TestUtil.hpp"
 #include "QuerySketchUtil.hpp"
 
-// check if querySampleBatch generates the correct counts for the unique sketch in r.fq
-void testQuerySampleBatch(const std::vector<std::string> &sampleFiles) {
+void testQuerySampleBatch(const std::vector<std::string>& sampleFiles) {
     std::cerr << "START: Test querySample... \t";
 
     /*
-    uniqsketch has four uniqe kmers from 2 references: expected_ref_test_1, expected_ref_test_2 with ref integer ids 0, 1.
-    AGGCTACAAA, AGACTGAACT: from ref expected_ref_test_1 with id 0
-    CTCAGCTAAG, AGGCTACAAC: from ref expected_ref_test_2 with id 1
-    */
-    SketchHash sketchHash {{"CTCAGCTAAG",1},{"AGGCTACAAC",1},{"AGGCTACAAA",0},{"AGACTGAACT",0}};
-    std::vector<SketchHash> refSigCount {{{"AGGCTACAAA",0},{"AGACTGAACT",0}}, {{"CTCAGCTAAG",0},{"AGGCTACAAC",0}}};
-    std::vector<std::string> sketchRef {"expected_ref_test_1", "expected_ref_test_2"};
-    /*
-    samplefile r.fq has three reads each 11bp. 
-    AGACTGAACTC
-    AGACTGAACTG
-    AGACTGAACTT
+    Sketch has 4 unique kmers from 2 references (ids 0, 1):
+      ref 0 (expected_ref_test_1): AGGCTACAAA, AGACTGAACT
+      ref 1 (expected_ref_test_2): CTCAGCTAAG, AGGCTACAAC
 
-    When querying the 10bp kmers in reads against uniqsketch, 
-    AGACTGAACT observed three times in expected_ref_test_1 with id 0 and no kmers from reads are in expected_ref_test_2
-    therefore we should have the sketchCount vector as the result: {3, 0}
+    r.fq has 3 reads of 11bp: AGACTGAACTC, AGACTGAACTG, AGACTGAACTT
+    Querying 10bp kmers: AGACTGAACT hits ref 0 three times.
+    Expected sketchCount: {3, 0}
     */
-    std::vector<unsigned> sketchCount(sketchRef.size());    
-    std::vector<std::unordered_set<std::string> > refRead(sketchRef.size());
+    SketchHash sketchHash{
+        {"CTCAGCTAAG", 1}, {"AGGCTACAAC", 1},
+        {"AGGCTACAAA", 0}, {"AGACTGAACT", 0}
+    };
+    std::vector<SketchHash> refSigCount{
+        {{"AGGCTACAAA", 0}, {"AGACTGAACT", 0}},
+        {{"CTCAGCTAAG", 0}, {"AGGCTACAAC", 0}}
+    };
+    std::vector<std::string> sketchRef{"expected_ref_test_1", "expected_ref_test_2"};
+    std::vector<unsigned> sketchCount(sketchRef.size());
+    std::vector<std::unordered_set<std::string>> refRead(sketchRef.size());
 
     loadSketch(opt::ref, sketchHash, sketchRef, refSigCount);
-
     querySampleBatch(sampleFiles, sketchHash, sketchCount, refSigCount, refRead);
 
-    std::vector<unsigned> expectedSketchCount {3, 0}; 
-    
-    assert(std::equal(sketchCount.begin(), sketchCount.end(), expectedSketchCount.begin())==true);
+    std::vector<unsigned> expected{3, 0};
+    assert(std::equal(sketchCount.begin(), sketchCount.end(), expected.begin()) == true);
 
-    std::cerr << "PASSED: Test querySample" << std::endl;
+    std::cerr << "PASSED: Test querySample\n";
 }
 
-// check if generateQueryResult generated the correct tsv output as expected
 void testGenerateQueryResult() {
     std::cerr << "START: Test generateQueryResult... \t";
 
     /*
-    Querying kmers in r.fq resulted in the reference--count stat below:
-    expected_ref_test_1: 3
-    expected_ref_test_2: 0
-
-    So the final tsv output of querysketch should be:
-    ref	abundance	count
-    expected_ref_test_1	1	3
+    After querying r.fq:
+      expected_ref_test_1: count=3, expected_ref_test_2: count=0
+    Output should be: ref\tabundance\tcount -> expected_ref_test_1\t1\t3
     */
     std::vector<unsigned> sketchCount = {3, 0};
     std::vector<std::string> sketchRef = {"expected_ref_test_1", "expected_ref_test_2"};
-    std::vector<SketchHash> refSigCount {{{"AGGCTACAAA",2},{"AGACTGAACT",1}}, {{"CTCAGCTAAG",0},{"AGGCTACAAC",0}}};
-    std::vector<std::unordered_set<std::string> > refRead {{"1"}};
+    std::vector<SketchHash> refSigCount{
+        {{"AGGCTACAAA", 2}, {"AGACTGAACT", 1}},
+        {{"CTCAGCTAAG", 0}, {"AGGCTACAAC", 0}}
+    };
+    std::vector<std::unordered_set<std::string>> refRead{{"1"}};
 
     generateQueryResult(sketchCount, sketchRef, refSigCount, refRead, opt::out);
+    assert(compareFiles(opt::out, "expected_out_querysketch.tsv") == true);
 
-    assert(compareFiles(opt::out, "expected_out_querysketch.tsv")==true);
-    
-    std::cerr << "PASSED: Test generateQueryResult" << std::endl;
+    std::cerr << "PASSED: Test generateQueryResult\n";
 }
 
 int main() {
@@ -81,12 +75,11 @@ int main() {
     opt::readCutoff = 0;
     opt::out = "out_querysketch.tsv";
 
-    std::vector<std::string> sampleFiles;
-    sampleFiles.push_back("r.fq");
+    std::vector<std::string> sampleFiles = {"r.fq"};
 
     testQuerySampleBatch(sampleFiles);
     testGenerateQueryResult();
 
-    std::cerr << "QuerySketch: All tests PASSED!" << std::endl << std::endl;
+    std::cerr << "QuerySketch: All tests PASSED!\n\n";
     return 0;
 }

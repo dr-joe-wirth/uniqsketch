@@ -33,8 +33,11 @@ querysketchtest: test/querysketchtest.cpp
 bloomfiltertest: test/bloomfiltertest.cpp
 	$(CXX) $(INCLUDEPATH) $(CPPFLAGS) -o test/$@ $^
 
-test: uniqsketchtest querysketchtest bloomfiltertest
-	cd test; ./uniqsketchtest > /dev/null; ./querysketchtest > /dev/null; ./bloomfiltertest > /dev/null
+comparesketchtest: test/comparesketchtest.cpp
+	$(CXX) $(INCLUDEPATH) $(CPPFLAGS) -o test/$@ $^ $(LIBPATH)
+
+test: uniqsketchtest querysketchtest bloomfiltertest comparesketchtest
+	cd test; ./uniqsketchtest > /dev/null; ./querysketchtest > /dev/null; ./bloomfiltertest > /dev/null; ./comparesketchtest > /dev/null
 
 clean:
 	rm bin/uniqsketch bin/querysketch bin/comparesketch 

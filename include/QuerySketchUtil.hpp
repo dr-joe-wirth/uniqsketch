@@ -2,71 +2,59 @@
 #define QUERYSKETCHUTIL_HPP_
 
 #include <algorithm>
-#include <random>
+#include <fstream>
+#include <numeric>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "SequenceUtil.hpp"
 #include "BloomFilter.hpp"
 #include "ntHashIterator.hpp"
 
-#include "seqio.hpp"
-
-using namespace klibpp;
+#include "kseq_gz.h"
 
 namespace opt {
-// k-mer length
-unsigned kmerLen;
-// number of threads
-unsigned threads(1);
-// output file name
-std::string out("out_sketch.tsv");
-// read 1 input
-std::string r1;
-// read 2 input
-std::string r2;
-// input uniqsketch reference
-std::string ref;
-// number of hashes for Bloom filter
-unsigned nhash(3);
-// distinct Bloom filter size
-size_t dbfSize;
-// solid Bloom filter size
-size_t sbfSize;
-// bits per element in Bloom filter
-unsigned bits(64);
-//number of unique k-mers observed to call a hit
-int sketchHit(10);
-// flag to only use solid k-mers from reads
-int solid(0);
-// abundance cutoff 
-double abundanceCutoff(0.0);
-// read number cutoff
-int readCutoff(2);
+unsigned kmerLen;                                       // k-mer length
+unsigned threads(1);                                    // number of threads
+std::string out("out_sketch.tsv");                      // output file name
+std::string r1;                                         // read 1 input
+std::string r2;                                         // read 2 input
+std::string ref;                                        // input uniqsketch reference
+unsigned nhash(3);                                      // number of hashes for Bloom filter
+size_t dbfSize;                                         // distinct Bloom filter size
+size_t sbfSize;                                         // solid Bloom filter size
+unsigned bits(64);                                      // bits per element in Bloom filter
+int sketchHit(10);                                      // unique k-mer hits to call a reference
+int solid(0);                                           // flag: only use solid k-mers from reads
+double abundanceCutoff(0.0);                            // abundance cutoff to report
+int readCutoff(2);                                      // read number cutoff to report
 }
 
-typedef std::unordered_map<std::string, unsigned> SketchHash;
+using SketchHash = std::unordered_map<std::string, unsigned>;
 
 /**
- * Load the uniqsketch of the reference universe into a hash table.
+ * Load the uniqsketch index into a hash table.
  *
- * @param fPath path to the uniquesketch file.
- * @param sketchHash Hash table for uniquesketch.
- * @param sketchRef Vector for mapping refId--refName
- * @param refSigCount Vector for keeping the count of each uniq k-mer for each reference
- *
+ * @param fPath  Path to the uniqsketch file.
+ * @param sketchHash  Hash table for the uniqsketch.
+ * @param sketchRef  Vector mapping refId to refName.
+ * @param refSigCount  Per-reference signature count map.
  */
-void loadSketch(const std::string &fPath, SketchHash &sketchHash, std::vector<std::string> &sketchRef, std::vector<SketchHash> &refSigCount) {    
-    std::ifstream sketchFile(fPath.c_str());
+void loadSketch(const std::string& fPath, SketchHash& sketchHash,
+                std::vector<std::string>& sketchRef,
+                std::vector<SketchHash>& refSigCount) {
+    std::ifstream sketchFile(fPath);
     bool init = true;
     std::string seq;
-    while (getline(sketchFile, seq)) {
+    while (std::getline(sketchFile, seq)) {
         std::string uniqSeq, refName, contig;
         unsigned refId, refNum, pos;
         std::istringstream seqstm(seq);
         seqstm >> uniqSeq >> refId >> refName >> refNum >> contig >> pos;
         if (seqstm.fail()) {
-            std::cerr << "Error in parsing uniqsketch entry:\n" << seq << std::endl;
+            std::cerr << "Error in parsing uniqsketch entry:\n" << seq << "\n";
             exit(EXIT_FAILURE);
         }
         sketchHash.emplace(uniqSeq, refId);
@@ -83,28 +71,50 @@ void loadSketch(const std::string &fPath, SketchHash &sketchHash, std::vector<st
 }
 
 /**
- * Query an input read sequence file against uniqsketch and update the count of observed unique k-mers for references.
+ * Query an input read file against the uniqsketch index.
  *
- * @param in input file stream for a read file.
- * @param sketchHash Hash table for uniqsketch.
- * @param dbFilter Bloom filter for tracking distinct k-mers.
- * @param sbFilter Bloom filter for tracking k-mers observed at least twice.
- * @param sketchCount Vector for keeping the count of uniq k-mers for each reference
- * @param refSigCount Vector for keeping the count of each uniq k-mer for each reference
- * @param refRead Vector for keeping distinct reads for each reference
- *
+ * @param in  Path to the input read file.
+ * @param sketchHash  Hash table for the uniqsketch.
+ * @param dbFilter  Bloom filter for tracking distinct k-mers.
+ * @param sbFilter  Bloom filter for tracking solid k-mers.
+ * @param sketchCount  Per-reference unique k-mer hit counts.
+ * @param refSigCount  Per-reference per-signature counts.
+ * @param refRead  Per-reference distinct read id sets.
  */
-void querySample(const string& in, const SketchHash &sketchHash, BloomFilter &dbFilter, BloomFilter &sbFilter, std::vector<unsigned> &sketchCount, std::vector<SketchHash> &refSigCount, std::vector<std::unordered_set<std::string> > &refRead) {
-    bool good = true;
-    SeqStreamIn iss(in.c_str());    
-    #pragma omp parallel
-    for (KSeq record; good;) {
-        #pragma omp critical(in)
-        good = (iss >> record);
-        if (good && record.seq.length() >= opt::kmerLen) {
-            ntHashIterator itr(record.seq, opt::nhash, opt::kmerLen);
+void querySample(const std::string& in, const SketchHash& sketchHash,
+                 BloomFilter& dbFilter, BloomFilter& sbFilter,
+                 std::vector<unsigned>& sketchCount,
+                 std::vector<SketchHash>& refSigCount,
+                 std::vector<std::unordered_set<std::string>>& refRead) {
+    static const size_t BATCH_SIZE = 4096;
+    gzFile fp = gzopen(in.c_str(), "r");
+    kseq_t* ks = kseq_init(fp);
+
+    std::vector<std::string> seqBatch;
+    std::vector<std::string> nameBatch;
+    seqBatch.reserve(BATCH_SIZE);
+    nameBatch.reserve(BATCH_SIZE);
+
+    bool eof = false;
+    while (!eof) {
+        seqBatch.clear();
+        nameBatch.clear();
+        for (size_t i = 0; i < BATCH_SIZE; ++i) {
+            if (kseq_read(ks) < 0) {
+                eof = true;
+                break;
+            }
+            seqBatch.emplace_back(ks->seq.s, ks->seq.l);
+            nameBatch.emplace_back(ks->name.s, ks->name.l);
+        }
+
+        #pragma omp parallel for schedule(dynamic, 64)
+        for (size_t r = 0; r < seqBatch.size(); ++r) {
+            const std::string& seq = seqBatch[r];
+            if (seq.length() < opt::kmerLen) continue;
+
+            ntHashIterator itr(seq, opt::nhash, opt::kmerLen);
             while (itr != itr.end()) {
-                // if solid is set, ignore weak kmers (appearing just once in data mainly due to sequencing error)
                 if (opt::solid) {
                     if (dbFilter.insert_make_change(*itr)) {
                         ++itr;
@@ -112,7 +122,7 @@ void querySample(const string& in, const SketchHash &sketchHash, BloomFilter &db
                     }
                 }
 
-                std::string kmer = get_canonical(record.seq.substr(itr.get_pos(), opt::kmerLen));
+                std::string kmer = get_canonical(seq.substr(itr.get_pos(), opt::kmerLen));
                 auto query = sketchHash.find(kmer);
                 if (query != sketchHash.end()) {
                     unsigned refId = query->second;
@@ -120,9 +130,8 @@ void querySample(const string& in, const SketchHash &sketchHash, BloomFilter &db
                     #pragma omp atomic
                     ++sketchCount[refId];
 
-                    std::string read_id = record.name;
                     #pragma omp critical(refout)
-                    refRead[refId].insert(read_id);
+                    refRead[refId].insert(nameBatch[r]);
 
                     #pragma omp atomic
                     refSigCount[refId][kmer]++;
@@ -131,87 +140,110 @@ void querySample(const string& in, const SketchHash &sketchHash, BloomFilter &db
             }
         }
     }
+    kseq_destroy(ks);
+    gzclose(fp);
 }
 
 /**
- * Query batch of input read files against uniqsketch and update the count of observed unique k-mers for references.
+ * Query batch of input read files against the uniqsketch index.
  *
- * @param sampleFiles all input read files.
- * @param sketchHash Hash table for uniqsketch.
- * @param sketchCount Vector for keeping the count of uniq k-mers for each reference
- * @param refSigCount Vector for keeping the count of each uniq k-mer for each reference
- * @param refRead Vector for keeping distinct reads for each reference
- *
+ * @param sampleFiles  All input read file paths.
+ * @param sketchHash  Hash table for the uniqsketch.
+ * @param sketchCount  Per-reference unique k-mer hit counts.
+ * @param refSigCount  Per-reference per-signature counts.
+ * @param refRead  Per-reference distinct read id sets.
  */
-void querySampleBatch(const std::vector<std::string> &sampleFiles, const SketchHash &sketchHash, std::vector<unsigned> &sketchCount, std::vector<SketchHash> &refSigCount, std::vector<std::unordered_set<std::string> > &refRead) {
-    BloomFilter dbFilter(opt::dbfSize*opt::bits, opt::nhash, opt::kmerLen);
-    BloomFilter sbFilter(opt::sbfSize*opt::bits, opt::nhash, opt::kmerLen);
-    
-    // query all input reads against uniqsketch  
+void querySampleBatch(const std::vector<std::string>& sampleFiles,
+                      const SketchHash& sketchHash,
+                      std::vector<unsigned>& sketchCount,
+                      std::vector<SketchHash>& refSigCount,
+                      std::vector<std::unordered_set<std::string>>& refRead) {
+    BloomFilter dbFilter(opt::dbfSize * opt::bits, opt::nhash, opt::kmerLen);
+    BloomFilter sbFilter(opt::sbfSize * opt::bits, opt::nhash, opt::kmerLen);
+
     for (unsigned i = 0; i < sampleFiles.size(); i++) {
-        querySample(sampleFiles[i], sketchHash, dbFilter, sbFilter, sketchCount, refSigCount, refRead);
+        querySample(sampleFiles[i], sketchHash, dbFilter, sbFilter,
+                    sketchCount, refSigCount, refRead);
     }
 
-    // increase non-zero sketchCount entries by one to adjust for distinct and solid Bloom filter stages mask
+    // Adjust for distinct/solid BF masking
     if (opt::solid) {
-        for (auto &itr: sketchCount) {
-            if (itr) {
-                ++itr;
+        for (auto& count : sketchCount) {
+            if (count) {
+                ++count;
             }
         }
     }
 }
 
 /**
- * Generate the query result against uniqsketch and output to a tsv file.
+ * Generate the query result and output to TSV files.
  *
- * @param sketchCount Vector for keeping the count of uniq k-mers for each reference
- * @param sketchRef Vector for mapping refId--refName
- * @param refSigCount Vector for keeping the count of each uniq k-mer for each reference
- * @param refRead Vector for keeping distinct reads for each reference
- * @param fPath path to the output result tsv file.
+ * @param sketchCount  Per-reference unique k-mer hit counts.
+ * @param sketchRef  Vector mapping refId to refName.
+ * @param refSigCount  Per-reference per-signature counts.
+ * @param refRead  Per-reference distinct read id sets.
+ * @param fPath  Path to the output result TSV file.
  */
-void generateQueryResult(std::vector<unsigned> &sketchCount, const std::vector<std::string> &sketchRef, const std::vector<SketchHash> &refSigCount, const std::vector<std::unordered_set<std::string> > &refRead, const std::string &fPath) {
-    // sort the index of sketchCount vector to keep the refId-refName mapping intact
+void generateQueryResult(std::vector<unsigned>& sketchCount,
+                         const std::vector<std::string>& sketchRef,
+                         const std::vector<SketchHash>& refSigCount,
+                         const std::vector<std::unordered_set<std::string>>& refRead,
+                         const std::string& fPath) {
+    // Sort index by descending count
     std::vector<unsigned> sketchIndex(sketchCount.size());
-    std::iota(std::begin(sketchIndex), std::end(sketchIndex), 0);
-    std::sort(std::begin(sketchIndex), std::end(sketchIndex), [&](int i, int j) { return sketchCount[i] > sketchCount[j]; });
+    std::iota(sketchIndex.begin(), sketchIndex.end(), 0);
+    std::sort(sketchIndex.begin(), sketchIndex.end(),
+              [&](unsigned i, unsigned j) { return sketchCount[i] > sketchCount[j]; });
 
     size_t sketchSum = 0;
     for (unsigned i = 0; i < sketchCount.size(); i++) {
-        if (refRead[i].size() > opt::readCutoff) {
-            if (sketchCount[i] >= opt::sketchHit) {
-                sketchSum += sketchCount[i];
+        if (refRead[i].size() > static_cast<size_t>(opt::readCutoff) &&
+            sketchCount[i] >= static_cast<unsigned>(opt::sketchHit)) {
+            sketchSum += sketchCount[i];
+        }
+    }
+
+    // Primary output: reference abundance table
+    std::ofstream outFile(opt::out);
+    outFile << "ref\tabundance\tcount\n";
+    if (sketchSum != 0) {
+        for (unsigned i = 0; i < sketchCount.size(); i++) {
+            unsigned idx = sketchIndex[i];
+            if (refRead[idx].size() > static_cast<size_t>(opt::readCutoff) &&
+                sketchCount[idx] >= static_cast<unsigned>(opt::sketchHit)) {
+                double abundance = static_cast<double>(sketchCount[idx]) / sketchSum;
+                if (abundance > opt::abundanceCutoff) {
+                    outFile << sketchRef[idx] << "\t" << abundance
+                            << "\t" << sketchCount[idx] << "\n";
+                }
+            }
+        }
+    }
+    outFile.close();
+
+    // Detailed signature log
+    std::ofstream logSig("log_" + opt::out);
+    logSig << "ref\ttotal_reads\tsignature\tcount\n";
+    for (unsigned i = 0; i < refSigCount.size(); i++) {
+        for (const auto& [sig, count] : refSigCount[i]) {
+            if (count) {
+                logSig << sketchRef[i] << "\t" << refRead[i].size()
+                       << "\t" << sig << "\t" << count << "\n";
             }
         }
     }
 
-    // generate output
-    std::ofstream outFile(opt::out.c_str());
-    outFile << "ref\tabundance\tcount\n";
-
-    if (sketchSum != 0) {
-        for (unsigned i = 0; i < sketchCount.size(); i++) {
-            if (refRead[sketchIndex[i]].size() > opt::readCutoff) {
-                if (sketchCount[sketchIndex[i]] >= opt::sketchHit) {
-                    double abundance = (double)sketchCount[sketchIndex[i]]/sketchSum;
-                    if (abundance > opt::abundanceCutoff) {
-                        outFile << sketchRef[sketchIndex[i]] << "\t" << abundance << "\t" << sketchCount[sketchIndex[i]] << std::endl;
-                    }
-                }
+    // Read-level log: matched read ids per reference
+    std::ofstream logRead("logread_" + opt::out);
+    logRead << "ref\tnum_reads\treads\n";
+    for (unsigned i = 0; i < refRead.size(); i++) {
+        if (refRead[i].size() > 1) {
+            logRead << sketchRef[i] << "\t" << refRead[i].size() << "\t";
+            for (const auto& rd : refRead[i]) {
+                logRead << rd << "\t";
             }
-        }
-    }        
-    outFile.close();
-
-    // generate detailed log for output
-    std::ofstream logRefSigCount(("log_" + opt::out).c_str());
-    logRefSigCount << "ref\ttotal_reads\tsignature\tcount\n";
-    for (unsigned i = 0; i < refSigCount.size(); i++) {        
-        for (auto itr: refSigCount[i]) {
-            if (itr.second) {
-                logRefSigCount << sketchRef[i] <<  "\t" << refRead[i].size() << "\t" << itr.first << "\t" << itr.second << "\n";
-            }
+            logRead << "\n";
         }
     }
 }

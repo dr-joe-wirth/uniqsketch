@@ -2,72 +2,57 @@
 #define UNIQSKETCHUTIL_HPP_
 
 #include <algorithm>
-#include <random>
-#include <unordered_map>
-#include <sstream>
+#include <cmath>
+#include <cstring>
 #include <iomanip>
+#include <numeric>
+#include <random>
+#include <sstream>
+#include <unordered_map>
 
 #include "SequenceUtil.hpp"
 #include "BloomFilter.hpp"
 #include "ntHashIterator.hpp"
 
 namespace opt {
-// number of references in the universe
-unsigned numRef;
-// number of thread
-unsigned threads(1);
-// bits per element in Bloom filter
-unsigned bits(128);
-// number of hashes for distinct Bloom filter
-unsigned nhash1(5);
-// number of hashes for solid Bloom filter
-unsigned nhash2(5);
-// length of k-mer
-unsigned kmerLen(81);
-// number of unique k-mers to represent a reference
-int sketchnum(100);
-// bit size of distinct Bloom filter
-size_t m1;
-// bit size of solid Bloom filter
-size_t m2;
-// distinct Bloom filter size (number of elements)
-size_t dbfSize(0);
-// solid Bloom filter size (number of elements)
-size_t sbfSize(0);
-// dir for storing universe unique k-mers
-std::string outdir("outdir_uniqsketch");
-// universe unique k-mers stat filename
-std::string refstat("db_uniq_count.tsv");
-// output sketch file name
-std::string outfile("sketch_uniq.tsv");
-// kmer spectrum range for low-complexity filtering
-unsigned kRange(5);
-// maxEntropy initial value computed using shannon entropy for k={1,2,3} is 12 
-double maxEntropy(12.0);
-// threshold for entropy score rate
-double entropyThreshold(0.65);
+unsigned numRef;                                        // number of references in the universe
+unsigned threads(1);                                    // number of threads
+unsigned bits(128);                                     // bits per element in Bloom filter
+unsigned nhash1(5);                                     // number of hashes for distinct BF
+unsigned nhash2(5);                                     // number of hashes for solid BF
+unsigned kmerLen(81);                                   // length of k-mer
+int sketchnum(100);                                     // unique k-mers to represent a reference
+size_t m1;                                              // bit size of distinct BF
+size_t m2;                                              // bit size of solid BF
+size_t dbfSize(0);                                      // distinct BF size (number of elements)
+size_t sbfSize(0);                                      // solid BF size (number of elements)
+std::string outdir("outdir_uniqsketch");                // dir for universe unique k-mers
+std::string refstat("db_uniq_count.tsv");               // unique k-mers stat filename
+std::string outfile("sketch_uniq.tsv");                 // output sketch file name
+unsigned kRange(5);                                     // k-mer spectrum range for entropy filter
+double maxEntropy(12.0);                                // initial entropy for k={1,2,3}
+double entropyThreshold(0.65);                          // entropy score rate threshold
 }
 
-typedef std::unordered_map<std::string, unsigned> SketchHash;
+using SketchHash = std::unordered_map<std::string, unsigned>;
 
 /**
- * Insert k-mers fasta sequences from a reference into distinct and solid Bloom filters.
+ * Insert k-mers from a FASTA reference into distinct and solid Bloom filters.
  *
- * @param fPath path to a reference file.
- * @param dbFilter distinct Bloom filter for keeping track of distinct k-mers.
- * @param sbFilter solid Bloom filter for keeping track of reapeat k-mers.
- * 
+ * @param fPath  Path to a reference file.
+ * @param dbFilter  Distinct Bloom filter for tracking distinct k-mers.
+ * @param sbFilter  Solid Bloom filter for tracking repeat k-mers.
  */
-void loadBFfa(const std::string &fPath, BloomFilter &dbFilter, BloomFilter &sbFilter) {
-    std::ifstream refFile(fPath.c_str());
-    std::string seq;    
-    bool good = static_cast<bool>(getline(refFile, seq));
+void loadBFfa(const std::string& fPath, BloomFilter& dbFilter, BloomFilter& sbFilter) {
+    std::ifstream refFile(fPath);
+    std::string seq;
+    bool good = static_cast<bool>(std::getline(refFile, seq));
     while (good) {
         std::string faSeq;
-        good = static_cast<bool>(getline(refFile, seq));
+        good = static_cast<bool>(std::getline(refFile, seq));
         while (good && seq[0] != '>') {
             faSeq += seq;
-            good = static_cast<bool>(getline(refFile, seq));
+            good = static_cast<bool>(std::getline(refFile, seq));
         }
         ntHashIterator itr(faSeq, std::max(opt::nhash1, opt::nhash2), opt::kmerLen);
         while (itr != itr.end()) {
@@ -80,43 +65,44 @@ void loadBFfa(const std::string &fPath, BloomFilter &dbFilter, BloomFilter &sbFi
 }
 
 /**
- * Scan through all k-mers in a reference and record all unique k-mers.
+ * Scan all k-mers in a reference and record unique k-mers.
  *
- * @param fPath path to a reference file.
- * @param refId integer id assigned to a reference.
- * @param sbFilter solid Bloom filter for tracking reapeat k-mers.
- * @param refCount vector of unique k-mer counts.
- * 
+ * @param fPath  Path to a reference file.
+ * @param refId  Integer id assigned to the reference.
+ * @param sbFilter  Solid Bloom filter for tracking repeat k-mers.
+ * @param refCount  Vector of unique k-mer counts per reference.
  */
-void checkRef(const std::string &fPath, const int refId, const BloomFilter &sbFilter, std::vector<int> &refCount) {
-    std::ifstream refFile(fPath.c_str());
-    std::stringstream uniqstm;
-    std::string sample_id = getBaseId(fPath);
-    uniqstm << opt::outdir << "/" << sample_id << ".tsv";    
-    std::ofstream uniqFile(uniqstm.str().c_str());
+void checkRef(const std::string& fPath, int refId,
+              const BloomFilter& sbFilter, std::vector<int>& refCount) {
+    std::ifstream refFile(fPath);
+    std::string sampleId = getBaseId(fPath);
+    std::ofstream uniqFile(opt::outdir + "/" + sampleId + ".tsv");
     std::string seq;
     size_t countUnique = 0;
-    bool good = static_cast<bool>(getline(refFile, seq));
-    std::string headerSeq = seq.substr(1, seq.size()-1);
+
+    bool good = static_cast<bool>(std::getline(refFile, seq));
+    std::string headerSeq = seq.substr(1);
     std::replace(headerSeq.begin(), headerSeq.end(), ' ', '_');
-    while (good) {        
+
+    while (good) {
         std::string faSeq;
-        good = static_cast<bool>(getline(refFile, seq));
+        good = static_cast<bool>(std::getline(refFile, seq));
         while (good && seq[0] != '>') {
             faSeq += seq;
-            good = static_cast<bool>(getline(refFile, seq));
-        }        
+            good = static_cast<bool>(std::getline(refFile, seq));
+        }
         ntHashIterator itr(faSeq, opt::nhash2, opt::kmerLen);
         while (itr != itr.end()) {
             if (!sbFilter.contains(*itr)) {
-                countUnique++;
+                ++countUnique;
                 size_t seqLoc = itr.get_pos();
-                uniqFile << get_canonical(faSeq.substr(seqLoc, opt::kmerLen)) << "\t" << seqLoc << "\t" << headerSeq << std::endl;
+                uniqFile << get_canonical(faSeq.substr(seqLoc, opt::kmerLen))
+                         << "\t" << seqLoc << "\t" << headerSeq << "\n";
             }
             ++itr;
         }
         if (seq.size() > 1) {
-            headerSeq = seq.substr(1, seq.size()-1);
+            headerSeq = seq.substr(1);
             std::replace(headerSeq.begin(), headerSeq.end(), ' ', '_');
         }
     }
@@ -127,191 +113,247 @@ void checkRef(const std::string &fPath, const int refId, const BloomFilter &sbFi
 /**
  * Identify all unique k-mers in the reference universe.
  *
- * @param refFile vector of all references in the universe.
- * 
+ * @param refFiles  Vector of all reference file paths.
  */
-void identifyUniqKmers(const std::vector<std::string> &refFiles) {
-    std::cout << "k-mer length: " << opt::kmerLen << std::endl;
-    std::cout << "Number of distinct k-mers: " << opt::dbfSize << std::endl;
-    std::cout << "Number of repeat k-mers: " << opt::sbfSize << std::endl;
-    std::cout << "Number of unique k-mers: " << opt::dbfSize - opt::sbfSize << std::endl;
+void identifyUniqKmers(const std::vector<std::string>& refFiles) {
+    std::cout << "k-mer length: " << opt::kmerLen << "\n"
+              << "Number of distinct k-mers: " << opt::dbfSize << "\n"
+              << "Number of repeat k-mers: " << opt::sbfSize << "\n"
+              << "Number of unique k-mers: " << opt::dbfSize - opt::sbfSize << "\n";
 
-    // distinct and solid Bloom filters to keep track of unique/repeat k-mers
     BloomFilter dbFilter(opt::m1, opt::nhash1, opt::kmerLen);
     BloomFilter sbFilter(opt::m2, opt::nhash2, opt::kmerLen);
 
-    // load all reference sequences into distinct and solid Bloom filters
     #pragma omp parallel for schedule(dynamic)
-    for (unsigned file_i = 0; file_i < refFiles.size(); ++file_i) {
-        loadBFfa(refFiles[file_i], dbFilter, sbFilter);
+    for (unsigned i = 0; i < refFiles.size(); ++i) {
+        loadBFfa(refFiles[i], dbFilter, sbFilter);
     }
 
-    // check all references and output unique k-mers
     std::vector<int> refCount(opt::numRef);
     #pragma omp parallel for schedule(dynamic)
-    for (unsigned file_i = 0; file_i < refFiles.size(); ++file_i) {
-        checkRef(refFiles[file_i], file_i, sbFilter, refCount);
+    for (unsigned i = 0; i < refFiles.size(); ++i) {
+        checkRef(refFiles[i], i, sbFilter, refCount);
     }
 
-    // get the unique kmer stats for all references
-    std::ofstream tsvOut(opt::refstat.c_str());
-    for (int i =0; i < refCount.size(); i++) {    
-        tsvOut << opt::outdir << "/" << getBaseId(refFiles[i]) << ".tsv\t";    
-        tsvOut << refCount[i] << "\t" << i << std::endl;
+    std::ofstream tsvOut(opt::refstat);
+    for (size_t i = 0; i < refCount.size(); i++) {
+        tsvOut << opt::outdir << "/" << getBaseId(refFiles[i]) << ".tsv\t"
+               << refCount[i] << "\t" << i << "\n";
     }
     tsvOut.close();
 
-    std::cout << "Distinct BF actual fpr: " << setprecision(4) << fixed << pow((double)dbFilter.get_pop()/opt::m1,opt::nhash1) << std::endl;
-    std::cout << "Solid BF actual fpr: " << setprecision(4) << fixed << pow((double)sbFilter.get_pop()/opt::m2,opt::nhash2) << std::endl;
+    std::cout << "Distinct BF actual fpr: " << std::setprecision(4) << std::fixed
+              << std::pow(static_cast<double>(dbFilter.get_pop()) / opt::m1, opt::nhash1) << "\n"
+              << "Solid BF actual fpr: " << std::setprecision(4) << std::fixed
+              << std::pow(static_cast<double>(sbFilter.get_pop()) / opt::m2, opt::nhash2) << "\n";
 }
 
 /**
- * Digitize a DNA sequence
+ * Digitize a DNA sequence into an integer representation.
  *
- * @param seq DNA sequence to digitize.
- * 
- * @return integer representation of the DNA sequence.
- * 
+ * @param seq  DNA sequence to digitize.
+ * @return Integer representation of the DNA sequence.
  */
-unsigned digitize(const std::string &seq) {
+unsigned digitize(const std::string& seq) {
     if (seq.length() > opt::kRange) {
         return 0;
     }
     uint64_t hVal = 0;
-    for(unsigned i=0; i < seq.length(); i++) {
-        hVal = ((hVal << 2) | b2f[(unsigned char)seq[i]]);
+    for (unsigned i = 0; i < seq.length(); i++) {
+        hVal = (hVal << 2) | b2f[static_cast<unsigned char>(seq[i])];
     }
-    return (unsigned)hVal;
+    return static_cast<unsigned>(hVal);
 }
 
 /**
- * Check a signature for low-complexity
+ * Check a signature for low-complexity content using aggregate Shannon entropy.
  *
- * @param signature signature sequence to check
- * 
- * @return bool value 
- * 
+ * @param signature  Signature sequence to check.
+ * @return True if the signature is low-complexity, false otherwise.
  */
-bool lowComplexity(const std::string &signature) {
+bool lowComplexity(const std::string& signature) {
     if (opt::kmerLen <= opt::kRange) {
         return true;
     }
 
+    // Max spectrum size for kRange=5 is 4^5 = 1024
+    static constexpr unsigned MAX_SPEC = 1024;
+    unsigned kmerSpec[MAX_SPEC];
+
     double aggEntropy = 0.0;
-    #pragma omp parallel for
     for (unsigned k = 1; k <= opt::kRange; k++) {
-        std::vector<unsigned> kmerSpec((int)(2 << 2*k-1));
-        for (unsigned i = 0; i < signature.length()-k+1; i++) {
-            std::string seq = signature.substr(i,k);
-            unsigned dmer = digitize(seq);
-            kmerSpec[dmer]++;
-        }        
+        unsigned specSize = 1u << (2 * k);
+        unsigned mask = specSize - 1;
+        std::memset(kmerSpec, 0, specSize * sizeof(unsigned));
+
+        // Seed the rolling hash with the first k-mer
+        unsigned hVal = 0;
+        for (unsigned j = 0; j < k; j++) {
+            hVal = (hVal << 2) | b2f[static_cast<unsigned char>(signature[j])];
+        }
+        kmerSpec[hVal]++;
+
+        // Roll through remaining positions: shift out old base, shift in new base
+        for (unsigned i = 1; i <= signature.length() - k; i++) {
+            hVal = ((hVal << 2) | b2f[static_cast<unsigned char>(signature[i + k - 1])]) & mask;
+            kmerSpec[hVal]++;
+        }
+
         double entropy = 0.0;
-        for (unsigned i=0; i< kmerSpec.size(); i++) {
+        double denom = signature.size() - k + 1;
+        for (unsigned i = 0; i < specSize; i++) {
             if (kmerSpec[i]) {
-                entropy += -(double)kmerSpec[i]/(signature.size()-k+1)*log2((double)kmerSpec[i]/(signature.size()-k+1));
+                double p = static_cast<double>(kmerSpec[i]) / denom;
+                entropy -= p * std::log2(p);
             }
         }
-        #pragma omp atomic
         aggEntropy += entropy;
     }
-    return (aggEntropy/opt::maxEntropy <= opt::entropyThreshold);
+    return (aggEntropy / opt::maxEntropy <= opt::entropyThreshold);
 }
 
 /**
- * Extract the set unique k-mers for a given reference.
+ * Extract the unique k-mer set for a given reference.
  *
- * @param fPath path to a reference candidate unique k-mers.
- * @param refId integer id assigned to a reference.
- * @param sketchFilter Bloom filter for unique sketch.
- * @param out output file stream for th uniqsketch.
- * 
+ * @param fPath  Path to a reference's candidate unique k-mers.
+ * @param refId  Integer id assigned to the reference.
+ * @param sketchFilter  Bloom filter for the unique sketch.
+ * @param out  Output file stream for the uniqsketch.
  */
-void getUniqSet(const std::string &fPath, const unsigned refId, BloomFilter &sketchFilter, std::ofstream &out) {    
-    // store all unique k-mers for a reference
-    std::vector<std::string> sketchCandidates;
-    std::ifstream sketchFile(fPath.c_str());
+void getUniqSet(const std::string& fPath, unsigned refId,
+                BloomFilter& sketchFilter, std::ofstream& out) {
+    // Read all candidate lines
+    std::vector<std::string> lines;
+    std::ifstream sketchFile(fPath);
     std::string line;
-    while (getline(sketchFile, line)) {
-        sketchCandidates.push_back(line);
-    }
-
-    // shuffle the candidate list to uniformly select a subset of them
-    // TODO: explore multiple conditions (GC-content, proximity to other signatures) for selecting a uniq k-mer 
-    std::default_random_engine rng(0);
-    std::shuffle(std::begin(sketchCandidates), std::end(sketchCandidates), rng);
-
-    int count = 0;
-    for (unsigned i = 0; i < sketchCandidates.size() && count < opt::sketchnum; i++) { 
-        istringstream seqstm(sketchCandidates[i]);
-        std::string useq, contig;
-        unsigned pos;
-        seqstm >> useq >> pos >> contig;
-        if (lowComplexity(useq)) {
-            continue;   
-        } 
-
-        ntHashIterator itr(useq, opt::nhash1, opt::kmerLen);
-        while (itr != itr.end()) {
-            if (sketchFilter.insert_make_change(*itr)) {
-                count++;
-                #pragma omp critical(out)
-                {
-                    out << useq << "\t" << refId << "\t" << getBaseId(fPath) << "\t" << opt::numRef << "\t"  << contig << "\t" << pos << std::endl;
-                }
-            }
-            ++itr;
-        }
+    while (std::getline(sketchFile, line)) {
+        lines.push_back(std::move(line));
     }
     sketchFile.close();
+
+    if (lines.empty()) return;
+
+    // Build a lightweight index: extract (contig, pos) for sorting without extra string copies
+    size_t total = lines.size();
+    std::vector<unsigned> indices(total);
+    std::iota(indices.begin(), indices.end(), 0);
+
+    // Parse position from each line for sorting (format: seq \t pos \t contig)
+    // Use a fast scan: skip first field, read pos, read contig
+    struct PosKey {
+        unsigned pos;
+        const char* contigStart;
+        size_t contigLen;
+    };
+    std::vector<PosKey> keys(total);
+    for (size_t i = 0; i < total; i++) {
+        const char* s = lines[i].c_str();
+        // skip seq field
+        while (*s && *s != '\t') ++s;
+        if (*s) ++s;
+        // parse pos
+        keys[i].pos = 0;
+        while (*s >= '0' && *s <= '9') {
+            keys[i].pos = keys[i].pos * 10 + (*s - '0');
+            ++s;
+        }
+        if (*s) ++s;
+        // contig starts here
+        keys[i].contigStart = s;
+        keys[i].contigLen = lines[i].c_str() + lines[i].size() - s;
+    }
+
+    std::sort(indices.begin(), indices.end(),
+              [&keys](unsigned a, unsigned b) {
+                  int cmp = std::strncmp(keys[a].contigStart, keys[b].contigStart,
+                                         std::min(keys[a].contigLen, keys[b].contigLen));
+                  if (cmp != 0) return cmp < 0;
+                  if (keys[a].contigLen != keys[b].contigLen) return keys[a].contigLen < keys[b].contigLen;
+                  return keys[a].pos < keys[b].pos;
+              });
+
+    // Select evenly spaced candidates, checking low-complexity lazily
+    int count = 0;
+    size_t needed = std::min(static_cast<size_t>(opt::sketchnum), total);
+    double step = static_cast<double>(total) / needed;
+
+    for (size_t s = 0; s < needed && count < opt::sketchnum; s++) {
+        size_t slotStart = static_cast<size_t>(s * step);
+        size_t slotEnd = (s + 1 < needed) ? static_cast<size_t>((s + 1) * step) : total;
+
+        for (size_t i = slotStart; i < slotEnd; i++) {
+            unsigned idx = indices[i];
+            std::istringstream seqstm(lines[idx]);
+            std::string useq, contig;
+            unsigned pos;
+            seqstm >> useq >> pos >> contig;
+
+            if (lowComplexity(useq)) continue;
+
+            ntHashIterator itr(useq, opt::nhash1, opt::kmerLen);
+            bool found = false;
+            while (itr != itr.end()) {
+                if (sketchFilter.insert_make_change(*itr)) {
+                    ++count;
+                    found = true;
+                    #pragma omp critical(out)
+                    out << useq << "\t" << refId << "\t" << getBaseId(fPath)
+                        << "\t" << opt::numRef << "\t" << contig << "\t" << pos << "\n";
+                }
+                ++itr;
+            }
+            if (found) break;
+        }
+    }
 }
 
 /**
- * Get the unique k-mer count for a reference.
+ * Get the unique k-mer count from a stat line for sorting.
  *
- * @param sketchLine String of reference sketch file path and its unique k-mer count.
- *
+ * @param sketchLine  Tab-separated line: path, count, refId.
  * @return Number of unique k-mers.
  */
-inline int sketchRank(const std::string &sketchLine) {
-    std::stringstream ss(sketchLine);
+inline int sketchRank(const std::string& sketchLine) {
+    std::istringstream ss(sketchLine);
     std::string sketchPath;
-    int sketchCount, refId;
-    ss >> sketchPath >> sketchCount >> refId;
+    int sketchCount;
+    ss >> sketchPath >> sketchCount;
     return sketchCount;
 }
 
 /**
- * construct uniquesketch for the reference universe.
- * @param statFile path to the unique kmer stat file for all references.
+ * Construct the unique sketch for the reference universe.
+ *
+ * @param statFile  Path to the unique k-mer stat file for all references.
  */
-void buildSketch(const std::string &statFile) {
-    std::ifstream tsvIn(statFile.c_str());
+void buildSketch(const std::string& statFile) {
+    std::ifstream tsvIn(statFile);
     std::vector<std::string> uniqStats;
     std::string line;
-    while (getline(tsvIn, line)) {
+    while (std::getline(tsvIn, line)) {
         uniqStats.push_back(line);
     }
 
-    std::sort(  uniqStats.begin(), 
-                uniqStats.end(), 
-                [](std::string s1, std::string s2) { return sketchRank(s1) < sketchRank(s2); });
+    std::sort(uniqStats.begin(), uniqStats.end(),
+              [](const std::string& s1, const std::string& s2) {
+                  return sketchRank(s1) < sketchRank(s2);
+              });
 
-    std::ofstream out(opt::outfile.c_str());
-
-    BloomFilter sketchFilter(opt::bits*opt::sketchnum*uniqStats.size(), opt::nhash1, opt::kmerLen);
+    std::ofstream out(opt::outfile);
+    BloomFilter sketchFilter(opt::bits * opt::sketchnum * uniqStats.size(),
+                             opt::nhash1, opt::kmerLen);
 
     for (unsigned i = 4; i <= opt::kRange; i++) {
-        opt::maxEntropy += log2(opt::kmerLen - i + 1);
+        opt::maxEntropy += std::log2(opt::kmerLen - i + 1);
     }
 
     #pragma omp parallel for schedule(dynamic)
     for (unsigned i = 0; i < uniqStats.size(); i++) {
-        std::stringstream uniqstm(uniqStats[i]);
-        std::string sketch_path;
-        size_t sketch_count, sketch_refId;
-        uniqstm >> sketch_path >> sketch_count >> sketch_refId;
-        getUniqSet(sketch_path, sketch_refId, sketchFilter, out);
+        std::istringstream uniqstm(uniqStats[i]);
+        std::string sketchPath;
+        size_t sketchCount, sketchRefId;
+        uniqstm >> sketchPath >> sketchCount >> sketchRefId;
+        getUniqSet(sketchPath, sketchRefId, sketchFilter, out);
     }
     out.close();
 }
